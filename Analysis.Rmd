@@ -1,0 +1,871 @@
+---
+title: "Statistical Analysis for the Haptic Nudge Study"
+author: "Usman Rashid, Alain C. Vandal"
+date: "04/11/2019"
+output:
+  md_document:
+    variant: gfm
+    toc: yes
+    toc_depth: '4'
+  pdf_document:
+    toc: true
+    toc_depth: 4
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+
+# function for is nan
+is.nan.data.frame <- function(x)
+  do.call(cbind, lapply(x, is.nan))
+```
+
+```{r data_setup, echo=FALSE, include=FALSE}
+
+# Packages Used:
+require(ggplot2)
+require(lme4)
+require(car)
+require(MASS)
+require(sjstats)
+require(fBasics)
+require(ggpubr)
+require(reshape2)
+require(phia)
+require(emmeans)
+require(multcomp)
+require(jtools)
+require(rsq)
+require(r2glmm)
+require(sjPlot)
+require(MuMIn)
+require(effects)
+require(optimx)
+require(margins)
+require(cAIC4)
+require(ggsignif)
+require(nlme)
+require(stringr)
+require(dplyr)
+require(forcats)
+require(splines)
+require(ggsci)
+require(lemon)
+require(data.table)
+
+knit_print.data.frame <- lemon_print
+
+
+# Load data
+dataSource            <- read.csv("DataTable.csv", na.strings=c("","NA"))
+
+# Exclude participant 2 and 6
+dataSource$PartID     <- as.factor(dataSource$PartID)
+dataSource$Time       <- as.factor(dataSource$Time)
+dataSource$Obs        <- as.factor(dataSource$Obs)
+dataSource$Logged_iPad<- as.factor(dataSource$Logged_iPad)
+dataSource$Scheduled  <- as.factor(dataSource$Scheduled)
+
+#dataSource            <- subset(dataSource, PartID != 2 & PartID != 6)
+
+# Buzzed == NA is no
+dataSource$Buzzed   <- factor(dataSource$Buzzed)
+dataSource$Buzzed   <- as.character(dataSource$Buzzed)
+dataSource$Buzzed[is.na(dataSource$Buzzed)] <- "n"
+dataSource$Buzzed   <- tolower(dataSource$Buzzed)
+dataSource$Buzzed   <- as.factor(dataSource$Buzzed)
+
+# Remove spacing
+dataSource$Reason_DNB <- tolower(str_squish(dataSource$Reason_DNB))
+dataSource$Position <- tolower(str_squish(dataSource$Position))
+dataSource$Not_Observed <- tolower(str_squish(dataSource$Not_Observed))
+dataSource$Unable_To_Determine <- tolower(str_squish(dataSource$Unable_To_Determine))
+dataSource$Move1 <- tolower(str_squish(dataSource$Move1))
+dataSource$Move2 <- tolower(str_squish(dataSource$Move2))
+dataSource$Move3 <- tolower(str_squish(dataSource$Move3))
+dataSource$Move4 <- tolower(str_squish(dataSource$Move4))
+dataSource$Move5 <- tolower(str_squish(dataSource$Move5))
+dataSource$Move6 <- tolower(str_squish(dataSource$Move6))
+dataSource$Where <- tolower(str_squish(dataSource$Where))
+dataSource$With <- tolower(str_squish(dataSource$With))
+
+# Make factors
+dataSource$Reason_DNB <- as.factor(dataSource$Reason_DNB)
+dataSource$Position <- as.factor(dataSource$Position)
+dataSource$Not_Observed <- as.factor(dataSource$Not_Observed)
+dataSource$Unable_To_Determine <- as.factor(dataSource$Unable_To_Determine)
+dataSource$Where <- as.factor(dataSource$Where)
+dataSource$With <- as.factor(dataSource$With)
+
+# Melt Move Data
+dataSource <- reshape2::melt(dataSource,
+        # ID variables - all the variables to keep but not split apart on
+    id.vars=c("PartID", "Time", "Obs", "Logged_iPad", "Scheduled", "Buzzed", "Reason_DNB", "Position", "Not_Observed", "Unable_To_Determine", "Where", "With"),
+        # The source columns
+    measure.vars=c("Move1", "Move2", "Move3", "Move4", "Move5", "Move6"),
+        # Name of the destination column that will identify the original
+        # column that the measurement came from
+    variable.name="Move",
+    value.name="Activity"
+)
+
+dataSource$Move <- as.factor(dataSource$Move)
+dataSource$Activity <- as.factor(dataSource$Activity)
+
+# Recode activity labels
+levels(dataSource$Activity)[levels(dataSource$Activity) == "a" |
+                              levels(dataSource$Activity) == "af"] <- "AU"
+levels(dataSource$Activity)[levels(dataSource$Activity) == "ab" |
+                              levels(dataSource$Activity) == "aub" |
+                              levels(dataSource$Activity) == "b" |
+                              levels(dataSource$Activity) == "baf" |
+                              levels(dataSource$Activity) == "bau" |
+                              levels(dataSource$Activity) == "bf" |
+                              levels(dataSource$Activity) == "bu" |
+                              levels(dataSource$Activity) == "uab" |
+                              levels(dataSource$Activity) == "uaffb" |
+                              levels(dataSource$Activity) == "ub" |
+                              levels(dataSource$Activity) == "ubf"] <- "BiM"
+levels(dataSource$Activity)[levels(dataSource$Activity) == "afu" |
+                              levels(dataSource$Activity) == "afuf" |
+                              levels(dataSource$Activity) == "au" |
+                              levels(dataSource$Activity) == "auf" |
+                              levels(dataSource$Activity) == "fua" |
+                              levels(dataSource$Activity) == "ua" |
+                              levels(dataSource$Activity) == "uaf" |
+                              levels(dataSource$Activity) == "ufa" |
+                              levels(dataSource$Activity) == "ufaf"] <- "BiL"
+levels(dataSource$Activity)[levels(dataSource$Activity) == "n"] <- "No"
+levels(dataSource$Activity)[levels(dataSource$Activity) == "u" |
+                              levels(dataSource$Activity) == "uf"] <- "UU"
+levels(dataSource$Activity)[levels(dataSource$Activity) == "unable to determine"] <- NA
+
+dataSource$Hour <- as.factor(floor(as.numeric(dataSource$Obs) / 6.01) + 1)
+
+dataSource$Activity <- relevel(dataSource$Activity, "No")
+
+dataSource$Buzzed <- fct_relevel(dataSource$Buzzed, "n", "yes", "dnb", "bdi")
+levels(dataSource$Buzzed)[levels(dataSource$Buzzed) == "n"] <- "No buzz"
+levels(dataSource$Buzzed)[levels(dataSource$Buzzed) == "yes"] <- "Buzz"
+levels(dataSource$Buzzed)[levels(dataSource$Buzzed) == "dnb"] <- "Did not buzz"
+levels(dataSource$Buzzed)[levels(dataSource$Buzzed) == "bdi"] <- "Buzzed in error"
+
+dataSource$Buzzed <- relevel(dataSource$Buzzed, "Buzz")
+
+dataSource$Obs <- as.numeric(dataSource$Obs)
+
+# Add Labels to With
+levels(dataSource$With)[levels(dataSource$With) == "alone"] <- "Alone"
+levels(dataSource$With)[levels(dataSource$With) == "doctor"] <- "Doctor"
+levels(dataSource$With)[levels(dataSource$With) == "family"] <- "Family"
+levels(dataSource$With)[levels(dataSource$With) == "nurse"] <- "Nurse"
+levels(dataSource$With)[levels(dataSource$With) == "friend"] <- "Friend"
+levels(dataSource$With)[levels(dataSource$With) == "health care assistant" |
+                        levels(dataSource$With) ==  "healthcare assistant"] <- "Healthcare assistant"
+levels(dataSource$With)[levels(dataSource$With) == "therapy assistant"] <- "Therapy assistant"
+levels(dataSource$With)[levels(dataSource$With) == "therapist" |
+                        levels(dataSource$With) == "physio"] <- "Therapist"
+levels(dataSource$With)[levels(dataSource$With) == "family, doctor"] <- "Family:Doctor"
+levels(dataSource$With)[levels(dataSource$With) == "family, friend"] <- "Family:Friend"
+levels(dataSource$With)[levels(dataSource$With) == "family, health care assistant"] <- "Family:Healthcare assistant"
+levels(dataSource$With)[levels(dataSource$With) == "family, therapist, hca"] <- "Family:Therapist:Healthcare assistant"
+levels(dataSource$With)[levels(dataSource$With) == "family, nurse" |
+                        levels(dataSource$With) == "nurse, family"] <- "Family:Nurse"
+levels(dataSource$With)[levels(dataSource$With) == "family, therapist" |
+                        levels(dataSource$With) == "therapist, family"] <- "Family:Therapist"
+levels(dataSource$With)[levels(dataSource$With) == "healthcare assistant, nurse" |
+                        levels(dataSource$With) == "nurse, healthcare assistant" |
+                        levels(dataSource$With) ==  "nurse, health care assistant"] <- "Healthcare assistant:Nurse"
+levels(dataSource$With)[levels(dataSource$With) == "other patients" |
+                        levels(dataSource$With) == "other patients, breakfast group"] <- "Other patients"
+levels(dataSource$With)[levels(dataSource$With) == "therapist, therapy assistant"] <- "Therapist:Therapy assistant"
+levels(dataSource$With)[levels(dataSource$With) == "therapist, other patients"] <- "Therapist:Other patients"
+
+dataSource$With <- fct_relevel(dataSource$With, "Alone", "Doctor", "Family", "Friend", "Nurse", 
+                               "Other patients", "Therapist", "Therapy assistant", "Healthcare assistant", 
+                               "Family:Doctor", "Family:Friend", "Family:Healthcare assistant", "Family:Nurse", 
+                               "Family:Therapist", 
+                               "Family:Therapist:Healthcare assistant", 
+                               "Healthcare assistant:Nurse", "Therapist:Other patients",  "Therapist:Therapy assistant")
+
+# Add Labels to Reason_DNB
+levels(dataSource$Reason_DNB)[levels(dataSource$Reason_DNB) == "accupuncture"] <- "Acupuncture"
+levels(dataSource$Reason_DNB)[levels(dataSource$Reason_DNB) == "asleep" |
+                         levels(dataSource$Reason_DNB) == "sleep" |
+                         levels(dataSource$Reason_DNB) == "sleeping"] <- "Asleep"
+levels(dataSource$Reason_DNB)[levels(dataSource$Reason_DNB) == "assessment"] <- "Assessment"
+levels(dataSource$Reason_DNB)[levels(dataSource$Reason_DNB) == "bathroom"] <- "Bathroom"
+levels(dataSource$Reason_DNB)[levels(dataSource$Reason_DNB) == "buzzed in error"] <- "Buzzed in error"
+levels(dataSource$Reason_DNB)[levels(dataSource$Reason_DNB) == "couldn't locate"] <- "Couldn’t locate"
+levels(dataSource$Reason_DNB)[levels(dataSource$Reason_DNB) == "curtain drawn" |
+                         levels(dataSource$Reason_DNB) == "unable to buzz" |
+                         levels(dataSource$Reason_DNB) == "curtain drawn" |
+                         levels(dataSource$Reason_DNB) == "unable to see" |
+                         levels(dataSource$Reason_DNB) == "curtains closed" |
+                         levels(dataSource$Reason_DNB) == "curtains drawn" |
+                         levels(dataSource$Reason_DNB) == "curatins closed"|
+                         levels(dataSource$Reason_DNB) == "curtain drawn, unable to buzz" |
+                         levels(dataSource$Reason_DNB) == "curtain drawn, unable to see" |
+                         levels(dataSource$Reason_DNB) == "curtain closed,shower"] <- "Behind curtains"
+levels(dataSource$Reason_DNB)[levels(dataSource$Reason_DNB) == "error" |
+                         levels(dataSource$Reason_DNB) == "no data on acc" |
+                         levels(dataSource$Reason_DNB) == "tech issue"] <- "Technical error"
+levels(dataSource$Reason_DNB)[levels(dataSource$Reason_DNB) == "eathing/ drinking" |
+                         levels(dataSource$Reason_DNB) == "eating" |
+                         levels(dataSource$Reason_DNB) == "eating drinking" |
+                         levels(dataSource$Reason_DNB) == "eating/ drinking"] <- "Eating/drinking"
+levels(dataSource$Reason_DNB)[levels(dataSource$Reason_DNB) == "not stated"] <- NA
+levels(dataSource$Reason_DNB)[levels(dataSource$Reason_DNB) == "off ward"] <- "Off ward"
+
+# Reason_DNB reduced
+dataSource$Reason_DNB_reduced <- dataSource$Reason_DNB
+levels(dataSource$Reason_DNB_reduced)[levels(dataSource$Reason_DNB_reduced) == "Asleep"] <- "Sleeping"
+levels(dataSource$Reason_DNB_reduced)[levels(dataSource$Reason_DNB_reduced) == "Off ward" |
+                         levels(dataSource$Reason_DNB_reduced) == "Behind curtains" |
+                         levels(dataSource$Reason_DNB_reduced) == "Bathroom" |
+                         levels(dataSource$Reason_DNB_reduced) == "Couldn’t locate"] <- "Unable to see"
+levels(dataSource$Reason_DNB_reduced)[levels(dataSource$Reason_DNB_reduced) == "Eating/drinking" |
+                         levels(dataSource$Reason_DNB_reduced) == "Assessment" |
+                         levels(dataSource$Reason_DNB_reduced) == "Acupuncture" |
+                         levels(dataSource$Reason_DNB_reduced) == "Couldn't locate"] <- "Inappropriate"
+levels(dataSource$Reason_DNB_reduced)[levels(dataSource$Reason_DNB_reduced) == "dropout"] <- "Dropout"
+
+# Add Labels to Where
+levels(dataSource$Where)[levels(dataSource$Where) == "bathroom" |
+                         levels(dataSource$Where) == "washroom"] <- "Bathroom"
+levels(dataSource$Where)[levels(dataSource$Where) == "bed" |
+                         levels(dataSource$Where) == "bedroom" |
+                         levels(dataSource$Where) == "bedroom, bed" |
+                         levels(dataSource$Where) == "bedroom, chair" |
+                         levels(dataSource$Where) == "chair" |
+                         levels(dataSource$Where) == "chair,bed" |
+                         levels(dataSource$Where) == "room" |
+                         levels(dataSource$Where) == "room, bed" |
+                         levels(dataSource$Where) == "wheelchair"] <- "Bedroom"
+levels(dataSource$Where)[levels(dataSource$Where) == "bed to toilet" |
+                         levels(dataSource$Where) == "bed, bathroom" |
+                         levels(dataSource$Where) == "bedroom, bathroom"  ] <- "Bedroom:Bathroom"
+levels(dataSource$Where)[levels(dataSource$Where) == "bed, rehab ward, gym"] <- "Bedroom:Ward:Gym"
+levels(dataSource$Where)[levels(dataSource$Where) == "dining room"] <- "Dining room"
+levels(dataSource$Where)[levels(dataSource$Where) == "garden"] <- "Garden"
+levels(dataSource$Where)[levels(dataSource$Where) == "gym"] <- "Gym"
+levels(dataSource$Where)[levels(dataSource$Where) == "kitchen"] <- "Kitchen"
+levels(dataSource$Where)[levels(dataSource$Where) == "lift" |
+                         levels(dataSource$Where) == "off ward"] <- "Off ward"
+levels(dataSource$Where)[levels(dataSource$Where) == "lounge"] <- "Lounge"
+levels(dataSource$Where)[levels(dataSource$Where) == "rehab ward"] <- "Rehab ward"
+levels(dataSource$Where)[levels(dataSource$Where) == "cafe"] <- "Cafe"
+
+# Make move continuous
+dataSource$Move <- as.numeric(dataSource$Move)
+
+# Remove Buzzed in error
+#dataSource <- subset(dataSource, Buzzed != "Buzzed in error")
+
+# Remove variables which are not included in the report
+dataSource$Where <- NULL
+dataSource$With <- NULL
+dataSource$Logged_iPad <- NULL
+dataSource$Scheduled <- NULL
+dataSource$Position <- NULL
+dataSource$Not_Observed <- NULL
+dataSource$Unable_To_Determine <- NULL
+dataSource$Reason_DNB <- dataSource$Reason_DNB_reduced
+dataSource$Reason_DNB_reduced <- NULL
+
+# Additional Cleanup
+dataSource$Reason_DNB <- fct_explicit_na(dataSource$Reason_DNB, na_level = "Not stated")
+dataSource$Activity <- fct_explicit_na(dataSource$Activity, na_level = "Not recorded")
+dataSource$Activity <- fct_relevel(dataSource$Activity, "AU", "BiL", "BiM", "UU", "No", "Not recorded")
+
+dataSource$Reason.DNN <- dataSource$Reason_DNB
+dataSource$Reason_DNB <- NULL
+
+dataSource <- droplevels(dataSource)
+
+# Relabel categories
+dataSource$Buzzed <- factor(dataSource$Buzzed, levels = c("Buzz", "No buzz", "Did not buzz", "Buzzed in error"),
+                            labels = c("Nudged", "Not nudged", "Missed nudge", "Nudged in error"))
+dataSource$Nudge.Status <- dataSource$Buzzed
+dataSource$Buzzed <- NULL
+dataSource.withMove <- dataSource
+dataSource$Move <- NULL
+
+# Load Rand Schedule
+randSchedule <- read.csv("RandSchedule.csv")
+#randSchedule <- randSchedule[-c(2,6),]
+```
+
+\newpage
+
+# Randomisation Schedule
+
+Haptic nudge reminders were manually triggered by the observer immediately prior to movement observation by the researcher according to a planned randomisation schedule, such that for half of the observation periods a haptic nudge was to be provided and for half a haptic nudge was not to be provided. To account for any potential carry over effect across multiple observation periods randomisation was designed to deliver different types of nudge sequences. These sequences are given in the following table along with their number of occurrences.
+
+```{r rand_seq, echo=FALSE, warning=TRUE, render=lemon_print}
+tNudges <- matrix(nrow = 20, ncol = 3)
+nNudges <- matrix(nrow = 20, ncol = 3)
+
+for(i in seq(1, 20)) {
+  vec <- as.numeric(randSchedule[i,])
+  vec.a <- as.numeric(unlist(by(vec, rleid(vec), cumsum)))
+  vec.b <- -1*(vec - 1)
+  vec.b <- as.numeric(unlist(by(vec.b, rleid(vec.b), cumsum)))
+  
+  tNudges[i, 3] <- sum(vec.a == 3)
+  tNudges[i, 2] <- sum(vec.a == 2) - tNudges[i, 3]
+  tNudges[i, 1] <- sum(vec.a == 1) - tNudges[i, 2] - tNudges[i, 3]
+  
+  nNudges[i, 3] <- sum(vec.b == 3)
+  nNudges[i, 2] <- sum(vec.b == 2) - nNudges[i, 3]
+  nNudges[i, 1] <- sum(vec.b == 1) - nNudges[i, 2] - nNudges[i, 3]
+}
+
+
+textNudge <- c("Nudge, No nudge", "Nudge-Nudge, No nudge-No nudge", "Nudge-Nudge-Nudge, No nudge-No nudge-No nudge", "Total")
+
+nudgeData <- c("120, 120", "120, 120", "120, 120",  "720, 720")
+
+d <- data.frame(textNudge, nudgeData)
+names(d) <- c("Nudge sequence", "No. of occurrences")
+
+head(d)
+```
+
+# Variables Included in the Analysis
+
+```{r summary_stats, echo=FALSE}
+str(dataSource)
+```
+
+\newpage
+
+# Data Visualisations
+
+## Activity Distribution
+
+```{r act_dist, echo=FALSE, warning=TRUE}
+ggplot(data = dataSource, aes(x=Nudge.Status, y=reorder(Activity, desc(Activity)), color = Activity)) + geom_jitter(size=0.7) + 
+  scale_color_nejm() + scale_fill_nejm() + theme_minimal() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black")) + ylab("Activity") + xlab('Nudge status')
+```
+
+\newpage
+
+## Activity Proportions
+
+Each planned category (Nudge, No nudge) was to precede half (or 50%) of the total observations. However, it was not always possible to nudge the participants in accordance with the schedule. This resulted in an additional category (Missed nudge). Moreover, in some cases participants were nudged mistakenly when they were not supposed to be nudged. This also resulted in an additional category (Nudged in error).
+
+```{r act_prop, echo=FALSE, warning=TRUE}
+sData <- as.data.frame(dataSource %>% group_by(Nudge.Status, Activity) %>% summarise(Count = n() / (6*72*20) * 100, .groups="drop_last"))
+ggplot() + geom_bar(data=sData, aes(x = Nudge.Status, y=Count, fill=Activity), position="stack", stat="identity") +
+  scale_color_nejm() + scale_fill_nejm() + theme_minimal() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black")) + ylab('Proportion of total observations (%)') + xlab('Nudge status') +
+  scale_y_continuous(breaks=seq(0, 50, 5), limits = c(0, 50))
+```
+
+## Reasons for Missed Nudges
+
+```{r rsn_dnb, echo=FALSE, warning=TRUE}
+dataSource_dnb <- subset(dataSource, Nudge.Status == "Missed nudge")
+dataSource_dnb$Activity <- factor(dataSource_dnb$Activity, levels = c("No", "AU", "BiM", "BiL", "UU", "Not recorded"), 
+                                     labels = c("No", "AU, BiL, BiM", "AU, BiL, BiM", "AU, BiL, BiM", "No", "Not recorded"))
+dataSource_dnb$Activity <- fct_relevel(dataSource_dnb$Activity, "AU, BiL, BiM", "No", "Not recorded")
+sData <- as.data.frame(dataSource_dnb %>% group_by(Reason.DNN, Activity) %>% summarise(Count = n() /(3*72*20) * 100, .groups="drop_last"))
+sData$Reason.DNN <- fct_relevel(sData$Reason.DNN, "Sleeping", "Dropout", "Unable to see", "Inappropriate", "Technical error", "Not stated")
+ggplot(data=sData, aes(x = Reason.DNN, y=Count, fill=Activity)) + geom_bar(stat = 'identity') + scale_color_nejm() + scale_fill_nejm() + theme_minimal() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"), axis.text.x = element_text(size=8)) + ylab('Proportion of planned nudges (%)') + xlab('Reasons for missed nudges') +
+   scale_y_continuous(breaks=seq(0, 15, 1), limits = c(0, 15))
+```
+\newpage
+
+## Participant-wise Activity Proportions
+
+In this and subsequent sections, Nudged and Missed nudge are treated as a single category (Planned nudge), and Not nudged and Nudged in error are both treated as No nudge.
+
+```{r buzz_vs_no_buzz, echo=FALSE, warning=TRUE}
+dataSource.orig <- dataSource
+dataSource$Nudge.Status <- factor(dataSource$Nudge.Status, levels = c("Nudged", "Not nudged", "Missed nudge", "Nudged in error"),
+                            labels = c("Planned nudge", "No nudge", "Planned nudge", "No nudge"))
+dataSource_buzzed <- dataSource
+tData <- as.data.frame(dataSource_buzzed %>% group_by(Activity, Nudge.Status) %>% summarise(per = n() / (3*72*20) * 100, .groups="drop_last"))
+sData <- as.data.frame(dataSource_buzzed %>% group_by(PartID, Activity, Nudge.Status) %>% summarise(per = n() / (3*72) * 100, .groups="drop_last"))
+sData$Activity <- fct_relevel(sData$Activity, "AU", "BiL", "BiM", "UU", "No", "Not recorded")
+tData$Activity <- fct_relevel(tData$Activity, "AU", "BiL", "BiM", "UU", "No", "Not recorded")
+
+sData <- subset(sData, Activity != "Not recorded")
+sData <- subset(sData, Activity != "No")
+
+tData <- subset(tData, Activity != "Not recorded")
+tData <- subset(tData, Activity != "No")
+
+sData$Nudge.Status <- fct_relevel(sData$Nudge.Status, "No nudge", "Planned nudge")
+tData$Nudge.Status <- fct_relevel(tData$Nudge.Status, "No nudge", "Planned nudge")
+
+tData$PartID <- "All"
+
+sData <- rbind(sData, tData)
+
+ggplot() + geom_bar(data=sData, aes(x = PartID, y=per, fill=Activity), position="stack", stat="identity", width = 0.7)  +
+facet_wrap(~Nudge.Status, nrow = 2, ncol = 1) +
+ylab('Proportion of observations following No nudge, Planned nudge (%)') + xlab('Participant') +
+scale_color_nejm() + scale_fill_nejm() + theme_minimal() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black")) + scale_y_continuous(breaks=seq(0, 100, 10), limits = c(0, 100), sec.axis =
+                       sec_axis(~., name = "Proportion of observations following No nudge, Planned nudge (%)", breaks=seq(0, 100, 10)))
+```
+\newpage
+
+## Participant-wise Proportions for AU, BiL, BiM
+
+```{r buzz_vs_no_buzzII, echo=FALSE, warning=TRUE}
+sData <- subset(sData, Activity == "AU" | Activity == "BiL" | Activity == "BiM")
+sData$PartID <- reorder(sData$PartID, desc(sData$PartID))
+sData <- droplevels(sData)
+sData$Activity <- factor(sData$Activity,
+                             levels = c("AU", "BiL", "BiM"),
+                             labels = c("AU, BiL, BiM", "AU, BiL, BiM", "AU, BiL, BiM"))
+sData <- droplevels(sData)
+
+sData.small <- sData[sData$PartID != 'All',]
+
+sData.small <- as.data.frame(sData.small %>% group_by(PartID, Nudge.Status) %>% summarise(t=sum(per), .groups="drop_last"))
+
+temp.a<-sData.small[sData.small$PartID == 3 & sData.small$Nudge.Status == 'Planned nudge',]
+temp.b<-temp.a
+temp.a$PartID<-2
+temp.a$t<-0
+
+temp.b$PartID<-6
+temp.b$t<-0
+
+sData.small <- rbind(sData.small, temp.a)
+sData.small <- rbind(sData.small, temp.b)
+
+sData.small$Nudge.Schedule <- sData.small$Nudge.Status
+
+ggplot() + geom_bar(data=sData.small, aes(x = PartID, y=t, fill=Nudge.Schedule), position="stack", stat="identity", width = 0.7)  + ylab('Proportion of observations following No nudge, Planned nudge (%)') + xlab('Participant') + facet_wrap(~Nudge.Schedule) + coord_flip() +
+  scale_color_nejm() + scale_fill_nejm() + theme_minimal() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"))
+
+# For publication
+#ggplot() + geom_bar(data=sData.small, aes(x = PartID:fct_rev(Buzzed), y=t, fill=Buzzed), position="stack", stat="identity", width = 0.7)  + ylab('Proportion of observations following no nudge, planned nudge (%)') + xlab('Participant') + coord_flip() +
+#  scale_color_nejm() + scale_fill_nejm() + theme_minimal() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"))
+```
+\newpage
+
+# Primary Analysis
+
+The aim of this intention to treat analysis is to estimate the effect of Planned nudge compared to No nudge on the combined proportion of AU, BiL or BiM types of activity out of AU, BiL, BiM, UU and No.
+
+```{r mdl_data_prep, echo=TRUE, include=TRUE, warning=TRUE}
+modelData                 <- dataSource.orig
+
+modelData$Nudge.Schedule  <- factor(modelData$Nudge.Status,
+                                    levels = c("Nudged", "Not nudged",
+                                               "Missed nudge", "Nudged in error"),
+                                    labels = c("Planned nudge", "No nudge",
+                                               "Planned nudge", "No nudge"))
+
+modelData$Activity        <- factor(modelData$Activity,
+                                    levels = c("AU", "BiL", "BiM", "UU",
+                                               "No", "Not recorded"),
+                                    labels = c("AU, BiL, BiM", "AU, BiL, BiM",
+                                               "AU, BiL, BiM",
+                                               "No", "No", "Not recorded"))
+
+levels(modelData$Activity)[levels(modelData$Activity) == "Not recorded"] <- NA
+
+modelData$Activity        <- relevel(modelData$Activity, "No")
+```
+
+## Logistic Mixed Model
+
+The model has smooth cubic splines to explain variance across time. The knots are placed at: [8:00 AM, 9:00 AM, 10:00 AM, 11:00 AM, 12:00 PM, 1:00 PM, 2:00 PM, 3:00 PM, 4:00 PM, 5:00 PM, 6:00 PM].
+
+```{r model_setup_sens, echo=TRUE, include=TRUE, warning=TRUE}
+lmerModel <- glmer(Activity ~ Nudge.Schedule + ns(Obs, knots = seq(7, 67, 6)) +
+                     (1|PartID/Hour),
+                   na.action = na.omit,
+                   data = modelData,
+                   family = binomial(link = "logit"),
+                   control = glmerControl(optimizer = "bobyqa"))
+```
+
+## Model Estimates with Confidence Intervals
+
+```{r mdl_estim, include=TRUE, echo=FALSE, warning=TRUE, render=lemon_print}
+a<-data.frame(emmeans(lmerModel, ~Nudge.Schedule, type = "response"))
+a$df <- NULL
+colnames(a) <- c("Buzzed", "Probability", "SE", "95% CI lower", "95% CI upper")
+head(a)
+
+pa <- pairs(emmeans(lmerModel, ~Nudge.Schedule, type = "response"))
+co <- as.data.frame(confint(pa))
+co$null <- NULL
+co <- co[,c(5,6)]
+pa <- as.data.frame(pa)
+pa$null <- NULL
+
+estims <- cbind(pa, co)
+estims$df <- NULL
+colnames(estims) <- c("Contrast", "Odds ratio", "SE", "Z-value", "P-value", "95% CI lower", "95% CI upper")
+
+head(estims)
+```
+
+\newpage
+
+## Variance Explained across Time with Natural Splines
+
+```{r mdl_ns, include=TRUE, echo=FALSE, warning=TRUE}
+emipData <- emmip(lmerModel, Nudge.Schedule~Obs, CIs = TRUE, type = "response",
+                  cov.reduce = FALSE, at = list(Obs=seq(1, 72)),
+                  plotit = FALSE)
+
+tLabels <- dataSource$Time
+tLabels <- tLabels[seq(1, 72)]
+
+emipData$Nudge.Schedule <- fct_relevel(emipData$Nudge.Schedule, "No nudge", "Planned nudge")
+
+ggplot(data=emipData, aes(x=Obs, y=yvar, color=Nudge.Schedule)) +
+  geom_line() + 
+  geom_ribbon(aes(ymax=UCL, ymin=LCL, fill=Nudge.Schedule, color=NULL), alpha=0.15) +
+  scale_color_nejm() + scale_fill_nejm() + theme_minimal() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black")) +
+  scale_x_continuous(breaks = c(seq(1, 72, 12), 72), labels = tLabels[c(seq(1, 72, 12), 72)]) +
+  xlab('Time of the day') + ylab('Probability of AU, BiL or BiM')
+```
+\newpage
+
+## Sensitivity Analysis
+
+A sensitivity analysis consisting of a simulated worst-case scenario is conducted to evaluate the sensitivity of the estimated effect size for the Planned nudge to missing data. The worst-case simulation is based on multiple (m = 10) random imputations from single trial binomial distributions with mean activity proportions of the participant with worst outcomes.
+
+```{r mdl_data_prep_sens, echo=TRUE, include=TRUE, warning=TRUE}
+modelData.WC              <- dataSource.orig
+
+modelData.WC$
+  Nudge.Schedule          <- factor(modelData.WC$Nudge.Status,
+                                    levels = c("Nudged", "Not nudged",
+                                               "Missed nudge", "Nudged in error"),
+                                    labels = c("Planned nudge", "No nudge",
+                                               "Planned nudge", "No nudge"))
+
+modelData.WC$Activity     <- factor(modelData.WC$Activity,
+                                    levels = c("AU", "BiL", "BiM", "UU",
+                                               "No", "Not recorded"),
+                                    labels = c("AU, BiL, BiM", "AU, BiL, BiM",
+                                               "AU, BiL, BiM",
+                                               "No", "No", "Not recorded"))
+
+levels(modelData.WC$Activity)[levels(modelData.WC$Activity) == "Not recorded"] <- NA
+
+modelData.WC$Activity     <- relevel(modelData.WC$Activity, "No")
+
+list.modelData.WC         <- list()
+
+for(i in seq(1, 10)) { # 10 random imputations
+  
+  freshCopy               <- modelData.WC
+  
+  # Random imputation
+  # Number of missing values following "No nudge"       = 542
+  rNN                     <- factor(rbinom(542, 1, 6.4814815/100),
+                                    levels = c(0, 1), labels = c("No", "AU, BiL, BiM"))
+  # Number of missing values following "Planned nudge"  = 1122 - 542
+  rPN                     <- factor(rbinom(1122 - 542, 1, 0.9259259/100),
+                                    levels = c(0, 1), labels = c("No", "AU, BiL, BiM"))
+  
+  freshCopy$Activity[is.na(freshCopy$Activity) &
+                       freshCopy$Nudge.Schedule == "No nudge"]      <- rNN
+  freshCopy$Activity[is.na(freshCopy$Activity) &
+                       freshCopy$Nudge.Schedule == "Planned nudge"] <- rPN
+  
+  list.modelData.WC[[i]]  <- freshCopy
+}
+```
+
+\newpage
+
+### Logistic Mixed Models
+
+```{r model_setup, echo=TRUE, include=TRUE, warning=TRUE}
+list.lmerModel.WC <- list()
+for(i in seq(1, 10)) {
+  list.lmerModel.WC[[i]] <- glmer(Activity ~ Nudge.Schedule +
+                                    ns(Obs, knots = seq(7, 67, 6)) +
+                                    (1|PartID/Hour),
+                                  na.action = na.omit,
+                                  data = list.modelData.WC[[i]],
+                                  family = binomial(link = "logit"),
+                                  control = glmerControl(optimizer = "bobyqa"))
+}
+```
+
+###  Sensitivity Estimates with Confidence Intervals
+
+```{r mdl_estim_sens, include=TRUE, echo=FALSE, warning=FALSE, render=lemon_print}
+list.a.IV <- list()
+list.estims.IV <- list()
+for(i in seq(1, 10)) {
+a<-data.frame(emmeans(list.lmerModel.WC[[i]], ~Nudge.Schedule, type = "response"))
+a$df <- NULL
+colnames(a) <- c("Nudge.Schedule", "Probability", "SE", "95% CI lower", "95% CI upper")
+a$Case <- "WC"
+a.IV <- a
+
+a.IV <- a.IV[, c(6, 1,2,3,4,5)]
+
+list.a.IV[[i]] <- a.IV
+
+pa <- pairs(emmeans(list.lmerModel.WC[[i]], ~Nudge.Schedule, type = "response"))
+co <- as.data.frame(confint(pa))
+co$null <- NULL
+co <- co[,c(5,6)]
+pa <- as.data.frame(pa)
+pa$null <- NULL
+
+estims <- cbind(pa, co)
+estims$df <- NULL
+colnames(estims) <- c("Contrast", "Odds ratio", "SE", "Z-value", "P-value", "95% CI lower", "95% CI upper")
+
+estims$Case <- "WC"
+
+estims.IV <- estims
+
+estims.IV <- estims.IV[, c(8, seq(1,7))]
+
+list.estims.IV[[i]] <- estims.IV
+}
+
+t.a<-do.call("rbind", list.a.IV)
+t.a<-as.data.frame(t.a %>% group_by(Case, Nudge.Schedule) %>% summarise(Probability = mean(Probability), SE=mean(SE), `95% CI lower`=mean(`95% CI lower`), `95% CI upper`=mean(`95% CI upper`), .groups = "drop_last"))
+head(t.a)
+
+t<-do.call("rbind", list.estims.IV)
+t<-as.data.frame(t %>% group_by(Case, Contrast) %>% summarise(`Odds ratio` = mean(`Odds ratio`), SE=mean(SE), `Z-value` = mean(`Z-value`), `P-value` = mean(`P-value`), `95% CI lower`=mean(`95% CI lower`), `95% CI upper`=mean(`95% CI upper`), .groups = "drop_last"))
+head(t)
+```
+
+\newpage
+
+## Exploratory Analysis
+
+### Local Average Treatment Effect (LATE)
+
+To estimate the local average treatment effect (also known as complier average causal effect (CACE)), an instrumental variable analysis is conducted.
+
+```{r mdl_data_prep_sens_late, echo=TRUE, include=TRUE, warning=TRUE}
+modelData.IV                <- dataSource.orig
+
+modelData.IV$
+  Nudge.Schedule            <- factor(modelData.IV$Nudge.Status,
+                                      levels = c("Nudged", "Not nudged",
+                                                 "Missed nudge", "Nudged in error"),
+                                      labels = c("Planned nudge", "No nudge",
+                                                 "Planned nudge", "No nudge"))
+
+modelData.IV$Nudge.Schedule <- relevel(modelData.IV$Nudge.Schedule, "No nudge")
+
+modelData.IV$Nudge.Deliver  <- factor(modelData.IV$Nudge.Status,
+                                      levels = c("Nudged", "Not nudged",
+                                                 "Missed nudge", "Nudged in error"),
+                                      labels = c("Nudged", "Not nudged",
+                                                 "Not nudged", "Nudged"))
+
+modelData.IV$Activity       <- factor(modelData.IV$Activity,
+                                      levels = c("AU", "BiL", "BiM", "UU", "No",
+                                                 "Not recorded"),
+                                      labels = c("AU, BiL, BiM", "AU, BiL, BiM",
+                                                 "AU, BiL, BiM",
+                                                 "No", "No", "Not recorded"))
+modelData.IV$Activity       <- relevel(modelData.IV$Activity, "No")
+
+levels(modelData.IV$Activity)[levels(modelData.IV$Activity) == "Not recorded"] <- NA
+```
+
+### Logistic Mixed Models
+
+```{r model_setup_LATE, echo=TRUE, include=TRUE, warning=TRUE}
+lmerModel.IV.r        <- glmer(Nudge.Deliver ~ ns(Obs, knots = seq(7, 67, 6))*Nudge.Schedule +
+                                 (1|PartID/Hour),
+                               family = binomial(link="logit"),
+                               modelData.IV,
+                               control = glmerControl(optimizer = "bobyqa",
+                                                      optCtrl=list(maxfun = 1e6)))
+
+modelData.IV$
+  Nudge.Schedule.r    <- resid(lmerModel.IV.r, type = "response")
+
+lmerModel.IV          <- glmer(Activity ~ Nudge.Deliver + Nudge.Schedule.r +
+                                 ns(Obs, knots = seq(7, 67, 6)) +
+                                 (1|PartID/Hour),
+                               na.action = na.omit,
+                               data = modelData.IV,
+                               family = binomial(link = "logit"),
+                               control = glmerControl(optimizer = "bobyqa"))
+```
+
+\newpage
+
+###  LATE Estimate with Confidence Intervals
+
+```{r mdl_estim_sens_LATE, include=TRUE, echo=FALSE, warning=TRUE, render=lemon_print}
+a<-data.frame(emmeans(lmerModel.IV, ~Nudge.Deliver, type = "response"))
+a$df <- NULL
+colnames(a) <- c("Buzzed", "Probability", "SE", "95% CI lower", "95% CI upper")
+a$Case <- "LATE"
+a.IV <- a
+
+a.IV <- a.IV[, c(6, 1,2,3,4,5)]
+
+head(a.IV)
+
+pa <- pairs(emmeans(lmerModel.IV, ~Nudge.Deliver, type = "response"))
+co <- as.data.frame(confint(pa))
+co$null <- NULL
+co <- co[,c(5,6)]
+pa <- as.data.frame(pa)
+pa$null <- NULL
+
+estims <- cbind(pa, co)
+estims$df <- NULL
+colnames(estims) <- c("Contrast", "Odds ratio", "SE", "Z-value", "P-value", "95% CI lower", "95% CI upper")
+
+estims$Case <- "LATE"
+
+estims.IV <- estims
+
+estims.IV <- estims.IV[, c(8, seq(1,7))]
+
+head(estims.IV)
+```
+
+### Estimated Compliance across Time
+
+```{r mdl_ns_compliance, include=TRUE, echo=FALSE, warning=FALSE}
+modelData.IV.c <- modelData.IV
+
+modelData.IV.c$Nudge.Deliver   <- relevel(modelData.IV.c$Nudge.Deliver, "Not nudged")
+
+lmerModel.IV.r.c        <- glmer(Nudge.Deliver ~ ns(Obs, knots = seq(7, 67, 6))*Nudge.Schedule +
+                                 (1|PartID/Hour),
+                               family = binomial(link="logit"),
+                               modelData.IV.c,
+                               control = glmerControl(optimizer = "bobyqa",
+                                                      optCtrl=list(maxfun = 1e6)))
+
+
+emipData <- emmip(lmerModel.IV.r.c, Nudge.Schedule~Obs, CIs = FALSE, type = "response",
+                  cov.reduce = FALSE, at = list(Obs=seq(1, 72)),
+                  plotit = FALSE)
+
+tLabels <- dataSource$Time
+tLabels <- tLabels[seq(1, 72)]
+
+ggplot(data=emipData, aes(x=Obs, y=yvar, color=Nudge.Schedule)) +
+  geom_line() +
+  scale_color_nejm() + scale_fill_nejm() + theme_minimal() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black")) +
+  scale_x_continuous(breaks = c(seq(1, 72, 12), 72), labels = tLabels[c(seq(1, 72, 12), 72)]) +
+  xlab('Time of the day') + ylab('Probability of Nudged')
+```
+
+\newpage
+
+# Secondary Analysis
+
+The aim of this analysis is to separately estimate the effect of Planned nudge compared to No nudge on the proportion of AU and BiL or BiM types of activity out of AU, BiL, BiM, UU and No.
+
+## Logistic Mixed Models
+
+Two linear logistic mixed regression models are setup to separately estimate the effect of Planned nudge compared to No nudge on AU and BiL or BiM.
+
+```{r mdl_fit_sec, echo=TRUE, include=TRUE, warning=TRUE}
+# Model for AU
+modelData_AU              <- dataSource.orig
+
+modelData_AU$
+  Nudge.Schedule          <- factor(modelData_AU$Nudge.Status,
+                                    levels = c("Nudged", "Not nudged",
+                                               "Missed nudge", "Nudged in error"),
+                                    labels = c("Planned nudge", "No nudge",
+                                               "Planned nudge", "No nudge"))
+
+modelData_AU$Activity     <- factor(modelData_AU$Activity,
+                             levels = c("AU", "BiL", "BiM", "UU",
+                                        "No", "Not recorded"),
+                             labels = c("AU", "No", "No",
+                                        "No", "No", "Not recorded"))
+
+levels(modelData_AU$Activity)[levels(modelData_AU$Activity) == "Not recorded"] <- NA
+
+modelData_AU$Activity     <- relevel(modelData_AU$Activity, "No")
+
+lmerModel_AU              <- glmer(Activity ~ Nudge.Schedule +
+                                     ns(Obs, knots = seq(7, 67, 6)) +
+                                     (1|PartID/Hour),
+                                   na.action = na.omit,
+                                   data = modelData_AU,
+                                   family = binomial(link = "logit"),
+                                   control = glmerControl(optimizer = "bobyqa"))
+
+# Model for BiL, BiM
+modelData_BiL_BiM         <- dataSource.orig
+
+modelData_BiL_BiM$
+  Nudge.Schedule          <- factor(modelData_BiL_BiM$Nudge.Status,
+                                    levels = c("Nudged", "Not nudged",
+                                               "Missed nudge", "Nudged in error"),
+                                    labels = c("Planned nudge", "No nudge",
+                                               "Planned nudge", "No nudge"))
+
+modelData_BiL_BiM$
+  Activity                <- factor(modelData_BiL_BiM$Activity,
+                                    levels = c("AU", "BiL", "BiM", "UU",
+                                               "No", "Not recorded"),
+                                    labels = c("No", "BiL, BiM", "BiL, BiM",
+                                               "No", "No", "Not recorded"))
+
+levels(modelData_BiL_BiM$Activity)[levels(modelData_BiL_BiM$Activity) == "Not recorded"] <- NA
+
+modelData_BiL_BiM$
+  Activity                <- relevel(modelData_BiL_BiM$Activity, "No")
+
+lmerModel_BiL_BiM         <- glmer(Activity ~ Nudge.Schedule +
+                                     ns(Obs, knots = seq(7, 67, 6)) +
+                                     (1|PartID/Hour),
+                                   na.action = na.omit,
+                                   data = modelData_BiL_BiM,
+                                   family = binomial(link = "logit"),
+                                   control = glmerControl(optimizer = "bobyqa"))
+```
+
+
+## Model Estimates with Confidence Intervals
+
+```{r mdl_estim_sec, include=TRUE, echo=FALSE, warning=TRUE, render=lemon_print}
+pa_AU <- pairs(emmeans(lmerModel_AU, ~Nudge.Schedule, type = "response"))
+co_AU <- as.data.frame(confint(pa_AU))
+co_AU$null <- NULL
+co_AU <- co_AU[,c(5,6)]
+pa_AU <- as.data.frame(pa_AU)
+pa_AU$null <- NULL
+
+estims_AU <- cbind(pa_AU, co_AU)
+estims_AU$df <- NULL
+estims_AU$contrast <- "Planned nudge / No nudge (AU)"
+
+pa_BiL_BiM <- pairs(emmeans(lmerModel_BiL_BiM, ~Nudge.Schedule, type = "response"))
+co_BiL_BiM <- as.data.frame(confint(pa_BiL_BiM))
+co_BiL_BiM$null <- NULL
+co_BiL_BiM <- co_BiL_BiM[,c(5,6)]
+pa_BiL_BiM <- as.data.frame(pa_BiL_BiM)
+pa_BiL_BiM$null <- NULL
+
+estims_BiL_BiM <- cbind(pa_BiL_BiM, co_BiL_BiM)
+estims_BiL_BiM$df <- NULL
+estims_BiL_BiM$contrast <- "Planned nudge / No nudge (BiL or BiM)"
+
+estims <- rbind(estims_AU, estims_BiL_BiM)
+
+colnames(estims) <- c("Contrast", "Odds ratio", "SE", "Z-value", "P-value", "95% CI lower", "95% CI upper")
+
+head(estims[, c(1,2,3,4,5)])
+head(estims[, c(1,6,7)])
+```
